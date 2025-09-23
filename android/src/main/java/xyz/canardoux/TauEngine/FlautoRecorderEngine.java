@@ -594,7 +594,7 @@ public class FlautoRecorderEngine
 			recordingThread = new Thread(new Runnable() {
 				@Override
 				public void run() {
-					writeData(bufLn);
+					writeData(codec, numChannels, interleaved, bufLn);
 				}
 			}, "AudioRecorder Thread");
 			recordingThread.setPriority(Thread.MAX_PRIORITY);
