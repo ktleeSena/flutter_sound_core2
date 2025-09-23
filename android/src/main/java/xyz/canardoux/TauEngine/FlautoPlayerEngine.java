@@ -214,9 +214,9 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 			mInterleaved = interleaved;
 			mSession = theSession;
 			AudioAttributes attributes = new AudioAttributes.Builder()
-					.setLegacyStreamType(AudioManager.STREAM_MUSIC)
-					.setUsage(AudioAttributes.USAGE_MEDIA)
-					.setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+					.setLegacyStreamType(AudioManager.STREAM_VOICE_CALL)
+					.setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+					.setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
 					.build();
 			AudioFormat format;
 			if (codec == Flauto.t_CODEC.pcmFloat32)

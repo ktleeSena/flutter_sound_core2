@@ -47,7 +47,7 @@ public class FlautoRecorderEngine
 	implements FlautoRecorderInterface
 {
 		private AudioRecord recorder = null;
-		//private Thread recordingThread = null;
+		private Thread recordingThread = null;
 		private boolean isRecording = false;
 		private double maxAmplitude = 0;
 		private double previousAmplitude = 0;
@@ -358,7 +358,7 @@ public class FlautoRecorderEngine
 			int bufferSize) throws Exception {
 		FloatBuffer floatBuffer = FloatBuffer.allocate(bufferSize / 4);
 
-		int n = recorder.read(floatBuffer.array(), 0, bufferSize / 4, AudioRecord.READ_NON_BLOCKING);
+		int n = recorder.read(floatBuffer.array(), 0, bufferSize / 4, AudioRecord.READ_BLOCKING);
 
 		if (n > 0) {
 			totalBytes += n;
@@ -397,7 +397,7 @@ public class FlautoRecorderEngine
 	{
 			FloatBuffer floatBuffer = FloatBuffer.allocate(bufferSize/4);
 
-			int n = recorder.read(floatBuffer.array(), 0, bufferSize / 4, AudioRecord.READ_NON_BLOCKING);
+			int n = recorder.read(floatBuffer.array(), 0, bufferSize / 4, AudioRecord.READ_BLOCKING);
 			n *= 4;
 
 			if (n > 0)
@@ -460,7 +460,7 @@ public class FlautoRecorderEngine
 				ByteBuffer byteBuffer = ByteBuffer.allocate(bufferSize);
 
 
-				n = recorder.read(byteBuffer.array(), 0, bufferSize, AudioRecord.READ_NON_BLOCKING);
+				n = recorder.read(byteBuffer.array(), 0, bufferSize, AudioRecord.READ_BLOCKING);
 				if (n == 0)
 					return 0;
 				final int elementCount = n;
@@ -591,22 +591,14 @@ public class FlautoRecorderEngine
 			}
 			recorder.startRecording();
 			isRecording = true;
-			try {
-				writeAudioDataToFile(codec, sampleRate, numChannels, path);
-			} catch (Exception e) {
-				e.printStackTrace();
-			}
-			p = new Runnable() {
+			recordingThread = new Thread(new Runnable() {
 				@Override
 				public void run() {
-
-					if (isRecording) {
-						int n = writeData( codec, numChannels, interleaved, bufLn);
-
-					}
+					writeData(bufLn);
 				}
-			};
-			mainHandler.post(p);
+			}, "AudioRecorder Thread");
+			recordingThread.setPriority(Thread.MAX_PRIORITY);
+			recordingThread.start();
 		} else
 		{
 			throw new Exception("Cannot initialize the AudioRecord");
@@ -620,6 +612,7 @@ public class FlautoRecorderEngine
 		{
 			try
 			{
+				isRecording = false;
 				recorder.stop();
 			} catch ( Exception e )
 			{
@@ -627,12 +620,19 @@ public class FlautoRecorderEngine
 
 			try
 			{
-				isRecording = false;
 				recorder.release();
 			} catch ( Exception e )
 			{
 			}
 			recorder = null;
+		}
+		if (recordingThread != null) {
+			try {
+				recordingThread.join();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+			recordingThread = null;
 		}
 		closeAudioDataFile(filePath);
 	}
