@@ -31,10 +31,13 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 
 //-------------------------------------------------------------------------------------------------------------
 
 class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
+	private final Object audioTrackLock = new Object();
 	AudioTrack audioTrack = null;
 	int sessionId = 0;
 	long mPauseTime = 0;
@@ -44,6 +47,79 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 	FlautoPlayer mSession = null;
 	Flauto.t_CODEC mCodec = null;
 	boolean mInterleaved = true;
+	private final BlockingQueue<AudioPacket> audioPacketQueue = new ArrayBlockingQueue<>(10);
+	private Thread audioThread = null;
+	private volatile boolean isRunning = false;
+
+	private interface AudioPacket {
+    	void writeTo(AudioTrack track);
+	}
+
+	private class ByteAudioPacket implements AudioPacket {
+		final byte[] data;
+		ByteAudioPacket(byte[] data) { this.data = data; }
+
+		@Override
+		public void writeTo(AudioTrack track) {
+			if (mCodec == Flauto.t_CODEC.pcmFloat32) {
+				ByteBuffer buf = ByteBuffer.wrap(data);
+				buf.order(ByteOrder.nativeOrder());
+				FloatBuffer fbuf = buf.asFloatBuffer();
+				float[] ff = new float[data.length / 4];
+				fbuf.get(ff);
+				track.write(ff, 0, ff.length, AudioTrack.WRITE_BLOCKING);
+			} else {
+				track.write(data, 0, data.length, AudioTrack.WRITE_BLOCKING);
+			}
+			mSession.needSomeFood(1);
+		}
+	}
+
+	private class Int16AudioPacket implements AudioPacket {
+		final ArrayList<byte[]> data;
+		Int16AudioPacket(ArrayList<byte[]> data) { this.data = data; }
+
+		@Override
+		public void writeTo(AudioTrack track) {
+			int nbrChannels = data.size();
+			if (nbrChannels == 0) return;
+			int frameSize = data.get(0).length;
+			int ln = nbrChannels * frameSize;
+			byte[] interleavedData = new byte[ln];
+			for (int channel = 0; channel < nbrChannels; ++channel) {
+				byte[] b = data.get(channel);
+				if (b.length != frameSize) return; // Error
+				for (int i = 0; i < frameSize / 2; ++i) {
+					int pos = 2 * (channel + i * nbrChannels);
+					interleavedData[pos] = b[2 * i];
+					interleavedData[pos + 1] = b[2 * i + 1];
+				}
+			}
+			track.write(interleavedData, 0, ln, AudioTrack.WRITE_BLOCKING);
+			mSession.needSomeFood(1);
+		}
+	}
+
+	private class Float32AudioPacket implements AudioPacket {
+		final ArrayList<float[]> data;
+		Float32AudioPacket(ArrayList<float[]> data) { this.data = data; }
+
+		@Override
+		public void writeTo(AudioTrack track) {
+			int nbrOfChannels = data.size();
+			if (nbrOfChannels == 0) return;
+			int frameSize = data.get(0).length;
+			float[] r = new float[nbrOfChannels * frameSize];
+			for (int channel = 0; channel < nbrOfChannels; ++channel) {
+				float[] b = data.get(channel);
+				for (int i = 0; i < frameSize; ++i) {
+					r[i * nbrOfChannels + channel] = b[i];
+				}
+			}
+			track.write(r, 0, r.length, AudioTrack.WRITE_BLOCKING);
+			mSession.needSomeFood(1);
+		}
+	}
 
 	/*
 	class WriteBlockThread extends Thread {
@@ -117,18 +193,21 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 
 		public void run() {
 			int ln = 0; // The number of bytes accepted (and perhaps played) by the device
-			if (mCodec == Flauto.t_CODEC.pcmFloat32)
-			{
-				ByteBuffer buf = ByteBuffer.wrap(mData);
-				buf.order(ByteOrder.nativeOrder());
-				FloatBuffer fbuf = buf.asFloatBuffer();
-				float[] ff = new float[mData.length/4];
-				fbuf.get(ff);
-				ln = audioTrack.write(ff, 0, mData.length/4, AudioTrack.WRITE_BLOCKING);
-				ln = 4 * ln;
-			} else
-			{
-				ln = audioTrack.write(mData, 0, mData.length, AudioTrack.WRITE_BLOCKING);
+			synchronized (audioTrackLock) {
+				if (audioTrack == null) return;
+				if (mCodec == Flauto.t_CODEC.pcmFloat32)
+				{
+					ByteBuffer buf = ByteBuffer.wrap(mData);
+					buf.order(ByteOrder.nativeOrder());
+					FloatBuffer fbuf = buf.asFloatBuffer();
+					float[] ff = new float[mData.length/4];
+					fbuf.get(ff);
+					ln = audioTrack.write(ff, 0, mData.length/4, AudioTrack.WRITE_BLOCKING);
+					ln = 4 * ln;
+				} else
+				{
+					ln = audioTrack.write(mData, 0, mData.length, AudioTrack.WRITE_BLOCKING);
+				}
 			}
 			mSession.needSomeFood(1);
 		}
@@ -158,7 +237,10 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 				}
 
 			}
-			int	r = audioTrack.write(interleavedData, 0, ln, AudioTrack.WRITE_BLOCKING);
+			synchronized (audioTrackLock) {
+				if (audioTrack == null) return;
+				int	r = audioTrack.write(interleavedData, 0, ln, AudioTrack.WRITE_BLOCKING);
+			}
 			mSession.needSomeFood(1);
 		}
 	}
@@ -183,7 +265,10 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 					r[ i * nbrOfChannels + channel] = b[i];
 				}
 			}
-			ln = audioTrack.write(r, 0, r.length, AudioTrack.WRITE_BLOCKING);
+			synchronized (audioTrackLock) {
+				if (audioTrack == null) return;
+				ln = audioTrack.write(r, 0, r.length, AudioTrack.WRITE_BLOCKING);
+			}
 			mSession.needSomeFood(1);
 		}
 	}
@@ -196,6 +281,22 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 			sessionId = audioManager.generateAudioSessionId();
 		} else {
 			throw new Exception("Need SDK 21");
+		}
+	}
+
+	private void audioLoop() {
+		try {
+			while (isRunning) {
+				AudioPacket packet = audioPacketQueue.take(); 
+
+				synchronized (audioTrackLock) {
+					if (audioTrack != null) {
+						packet.writeTo(audioTrack); 
+					}
+				}
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
 		}
 	}
 
@@ -235,7 +336,12 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 								: AudioFormat.CHANNEL_OUT_STEREO)
 						.build();
 			}
-			audioTrack = new AudioTrack(attributes, format, bufferSize, AudioTrack.MODE_STREAM, sessionId);
+			synchronized (audioTrackLock) {
+				audioTrack = new AudioTrack(attributes, format, bufferSize, AudioTrack.MODE_STREAM, sessionId);
+			}
+			isRunning = true;
+			audioThread = new Thread(this::audioLoop);
+			audioThread.start();
 			mPauseTime = 0;
 			mStartPauseTime = -1;
 			systemTime = SystemClock.elapsedRealtime();
@@ -247,16 +353,38 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 	}
 
 	void _play() {
-		audioTrack.play();
+		synchronized (audioTrackLock) {
+			if (audioTrack == null) return;
+			audioTrack.play();
+		}
 
 	}
 
 	void _stop() {
-		if (audioTrack != null) {
-			audioTrack.stop();
-			audioTrack.release();
-			audioTrack = null;
+		isRunning = false;
+
+		if (audioThread != null) {
+			audioThread.interrupt();
 		}
+
+		synchronized (audioTrackLock) {
+			if (audioTrack != null) {
+				audioTrack.stop();
+				audioTrack.release();
+				audioTrack = null;
+			}
+		}
+
+		audioPacketQueue.clear();
+
+		try {
+			if (audioThread != null) {
+				audioThread.join();
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		audioThread = null;
 		// blockThread = null;
 	}
 
@@ -264,16 +392,22 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 	}
 
 	void _pausePlayer() throws Exception {
-		mStartPauseTime = SystemClock.elapsedRealtime();
-		audioTrack.pause();
+		synchronized (audioTrackLock) {
+			if (audioTrack == null) return;
+			mStartPauseTime = SystemClock.elapsedRealtime();
+			audioTrack.pause();
+		}
 	}
 
 	void _resumePlayer() throws Exception {
-		if (mStartPauseTime >= 0)
-			mPauseTime += SystemClock.elapsedRealtime() - mStartPauseTime;
-		mStartPauseTime = -1;
+		synchronized (audioTrackLock) {
+			if (audioTrack == null) return;
+			if (mStartPauseTime >= 0)
+				mPauseTime += SystemClock.elapsedRealtime() - mStartPauseTime;
+			mStartPauseTime = -1;
 
-		audioTrack.play();
+			audioTrack.play();
+		}
 
 	}
 
@@ -281,7 +415,10 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 
 		if (Build.VERSION.SDK_INT >= 21) {
 			float v = (float) volume;
-			audioTrack.setVolume(v);
+			synchronized (audioTrackLock) {
+				if (audioTrack == null) return;
+				audioTrack.setVolume(v);
+			}
 		} else {
 			throw new Exception("Need SDK 21");
 		}
@@ -310,16 +447,22 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
         }
 
         // Set the stereo volume
-        audioTrack.setStereoVolume(leftVolume, rightVolume);
+		synchronized (audioTrackLock) {
+			if (audioTrack == null) return;
+			audioTrack.setStereoVolume(leftVolume, rightVolume);
+		}
     }	
 
 	void _setSpeed(double speed) throws Exception {
 		float v = (float) speed;
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
 			try {
-				PlaybackParams params = audioTrack.getPlaybackParams();
-				params.setSpeed(v);
-				audioTrack.setPlaybackParams(params);
+				synchronized (audioTrackLock) {
+					if (audioTrack == null) return;
+					PlaybackParams params = audioTrack.getPlaybackParams();
+					params.setSpeed(v);
+					audioTrack.setPlaybackParams(params);
+				}
 				return;
 			} catch (Exception err) {
 				mSession.logError("setSpeed: error " + err.getMessage());
@@ -333,10 +476,12 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 	}
 
 	boolean _isPlaying() {
-		if (audioTrack == null) {
-			return false;
+		synchronized (audioTrackLock) {
+			if (audioTrack == null) {
+				return false;
+			}
+			return audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING;
 		}
-		return audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING;
 	}
 
 	long _getDuration() {
@@ -354,23 +499,20 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 	}
 
 	int feedFloat32(ArrayList<float[]> data) throws Exception {
-
-		FeedFloat32Thread t = new FeedFloat32Thread(data);
-		t.start();
-
+		if (!isRunning) return 0; //-1?
+		audioPacketQueue.put(new Float32AudioPacket(data));
 		return 0;
-
 	}
 
 	int feedInt16(ArrayList<byte[]> data) throws Exception {
-		FeedInt16Thread t = new FeedInt16Thread(data);
-		t.start();
+		if (!isRunning) return 0; // -1?
+		audioPacketQueue.put(new Int16AudioPacket(data));
 		return 0;
 	}
 
 	int feed(byte[] data) throws Exception {
-		FeedThread t = new FeedThread(data);
-		t.start();
+		if (!isRunning) return 0; // -1?
+		audioPacketQueue.put(new ByteAudioPacket(data));
 		return 0;
 	}
 }
