@@ -310,7 +310,7 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 			boolean enableVoiceProcessing, // Not used on Android
 			FlautoPlayer theSession) throws Exception 
 	{
-		if (Build.VERSION.SDK_INT >= 29) { // 31 ?
+		// if (Build.VERSION.SDK_INT >= 29) { // 31 ?
 			mCodec = codec;
 			mInterleaved = interleaved;
 			mSession = theSession;
@@ -347,9 +347,9 @@ class FlautoPlayerEngine extends FlautoPlayerEngineInterface {
 			systemTime = SystemClock.elapsedRealtime();
 
 			theSession.onPrepared(); // Maybe too early ??? Should be after _play()
-		} else {
-			throw new Exception("Need SDK 29"); // 31 ?
-		}
+		// } else {
+		// 	throw new Exception("Need SDK 29"); // 31 ?
+		// }
 	}
 
 	void _play() {
