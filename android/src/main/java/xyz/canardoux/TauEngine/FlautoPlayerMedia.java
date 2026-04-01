@@ -23,6 +23,8 @@ import android.media.PlaybackParams;
 import android.os.Build;
 import android.util.Log;
 import java.util.ArrayList;
+import android.media.AudioAttributes;
+import android.media.AudioManager;
 //-------------------------------------------------------------------------------------------------------------
 
 
@@ -40,6 +42,17 @@ class FlautoPlayerMedia extends FlautoPlayerEngineInterface
  	{
 		this.flautoPlayer = theSession;
  		mediaPlayer = new MediaPlayer();
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+			AudioAttributes audioAttributes = new AudioAttributes.Builder()
+					.setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+					.setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+					.build();
+			mediaPlayer.setAudioAttributes(audioAttributes);
+		} else {
+			mediaPlayer.setAudioStreamType(AudioManager.STREAM_VOICE_CALL);
+		}
+
 		if (path == null)
 		{
 			throw new Exception("path is NULL");
